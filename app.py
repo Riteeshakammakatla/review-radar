@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import gc
+import threading
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -40,6 +41,7 @@ def get_model():
 review_texts = []
 product_names = []
 faiss_index = None
+index_status = None  # Tracks background indexing state
 
 # Set to 25000 to handle the entire dataset for maximum search accuracy
 MAX_ROWS = 25000
@@ -136,7 +138,7 @@ def favicon():
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    global review_texts, product_names, faiss_index
+    global review_texts, product_names, faiss_index, index_status
 
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -190,22 +192,34 @@ def upload():
         del df
         gc.collect()
 
-        # Build FAISS index
-        faiss_index = _build_index(review_texts)
+        index_status = "BUILDING"
+
+        # Build FAISS index in the background to prevent Railway 10-minute gateway timeout
+        def background_build():
+            global faiss_index, index_status, review_texts
+            try:
+                faiss_index = _build_index(review_texts)
+                index_status = "READY"
+                logger.info("Background indexing completed successfully!")
+            except Exception as e:
+                logger.error(f"Background indexing failed: {e}", exc_info=True)
+                index_status = "ERROR"
+
+        threading.Thread(target=background_build, daemon=True).start()
 
         elapsed = round(time.time() - start_time, 1)
-        logger.info(f"Upload complete in {elapsed}s")
+        logger.info(f"Upload processed in {elapsed}s. Indexing started in background.")
 
         return jsonify({
-            'message': f'Indexed {len(review_texts)} reviews in {elapsed}s',
+            'message': f'CSV accepted. Indexing {len(review_texts)} reviews in the background (takes a few mins)...',
             'total_reviews': len(review_texts),
-            'text_column': text_col,
+            'text_column': text_column if 'text_column' in locals() else text_col,
             'product_column': prod_col,
         })
 
     except Exception as e:
         logger.error(f"Upload failed: {e}", exc_info=True)
-        review_texts, product_names, faiss_index = [], [], None
+        review_texts, product_names, faiss_index, index_status = [], [], None, None
         gc.collect()
         return jsonify({'error': str(e)}), 500
 
@@ -218,6 +232,13 @@ def search():
 
     if not query:
         return jsonify({'error': 'Query cannot be empty'}), 400
+    
+    global index_status
+    if index_status == "BUILDING":
+        return jsonify({'error': 'The search index is currently building in the background (takes a few mins). Please wait and try again.'}), 400
+    if index_status == "ERROR":
+        return jsonify({'error': 'Background indexing failed. Please try re-uploading the CSV.'}), 500
+
     if faiss_index is None or not review_texts:
         return jsonify({'error': 'Please upload a CSV file first'}), 400
 
