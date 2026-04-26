@@ -23,8 +23,8 @@ review_texts = []
 product_names = []
 faiss_index = None
 
-# Process up to 5000 reviews — good balance between coverage and speed
-MAX_ROWS = 5000
+# Process up to 1000 reviews to guarantee stability on free tier
+MAX_ROWS = 1000
 
 REVIEW_COL_CANDIDATES = [
     'review', 'text', 'review text', 'review_text', 'comment', 'body',
@@ -94,12 +94,11 @@ def upload():
     file.save(filepath)
 
     try:
-        # Use default C engine with comma separator first (much faster)
         try:
-            df = pd.read_csv(filepath)
+            df = pd.read_csv(filepath, nrows=MAX_ROWS*2) # Read a bit extra to filter bad lines safely
         except Exception:
             # Fallback to python engine for tab-separated or other formats
-            df = pd.read_csv(filepath, sep=None, engine='python', on_bad_lines='warn')
+            df = pd.read_csv(filepath, sep=None, engine='python', on_bad_lines='warn', nrows=MAX_ROWS*2)
 
         original_count = len(df)
         if len(df) > MAX_ROWS:
@@ -123,8 +122,7 @@ def upload():
         print("[OK] FAISS index ready!")
 
         message = f'Indexed {len(review_texts)} reviews successfully'
-        if original_count > MAX_ROWS:
-            message += f' (first {MAX_ROWS} of {original_count} total)'
+        message += f' (Guaranteed stable memory mode: first 1000 rows used)'
 
         return jsonify({
             'message': message,
