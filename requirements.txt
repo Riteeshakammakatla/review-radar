@@ -1,6 +1,6 @@
 flask
 pandas
 numpy
-sentence-transformers
+fastembed
 faiss-cpu
 gunicorn
