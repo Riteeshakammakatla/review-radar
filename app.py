@@ -29,7 +29,8 @@ def get_model():
     if _model is None:
         logger.info("Loading fastembed model (BAAI/bge-small-en-v1.5)...")
         from fastembed import TextEmbedding
-        _model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        # Limit threads to 1 or 2 to drastically reduce memory usage during embedding
+        _model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5", threads=1)
         logger.info("Model loaded successfully!")
     return _model
 
@@ -41,7 +42,7 @@ product_names = []
 faiss_index = None
 
 # Set to 25000 to handle the entire dataset for maximum search accuracy
-MAX_ROWS = 5000
+MAX_ROWS = 25000
 
 # ---------------------------------------------------------------------------
 # Column detection
@@ -96,7 +97,8 @@ def preprocess_text(text):
 # ---------------------------------------------------------------------------
 def _build_index(texts):
     model = get_model()
-    batch_size = 256
+    # Reduce batch size to prevent memory spikes
+    batch_size = 32
     all_embeddings = []
 
     for i in range(0, len(texts), batch_size):
@@ -126,6 +128,10 @@ def _build_index(texts):
 @app.route('/')
 def home():
     return render_template('index.html')
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
 
 
 @app.route('/upload', methods=['POST'])
