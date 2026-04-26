@@ -10,7 +10,7 @@ app.config['UPLOAD_FOLDER'] = 'uploads'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# Load model at startup — Railway has enough RAM for this
+# Load model at startup
 # ---------------------------------------------------------------------------
 print("[INFO] Loading embedding model...")
 model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
@@ -22,6 +22,9 @@ print("[OK] Model loaded!")
 review_texts = []
 product_names = []
 faiss_index = None
+
+# Process up to 5000 reviews — good balance between coverage and speed
+MAX_ROWS = 5000
 
 REVIEW_COL_CANDIDATES = [
     'review', 'text', 'review text', 'review_text', 'comment', 'body',
@@ -55,7 +58,16 @@ def _auto_detect_text_column(df):
     return best_col
 
 def _build_index(texts):
-    embeddings = np.array(list(model.embed(texts))).astype('float32')
+    # Process in batches to avoid memory spikes
+    batch_size = 512
+    all_embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        batch_emb = np.array(list(model.embed(batch))).astype('float32')
+        all_embeddings.append(batch_emb)
+        print(f"  Embedded {min(i + batch_size, len(texts))}/{len(texts)}")
+
+    embeddings = np.vstack(all_embeddings)
     faiss.normalize_L2(embeddings)
     dim = embeddings.shape[1]
     index = faiss.IndexFlatIP(dim)
@@ -82,7 +94,16 @@ def upload():
     file.save(filepath)
 
     try:
-        df = pd.read_csv(filepath, sep=None, engine='python', on_bad_lines='warn')
+        # Use default C engine with comma separator first (much faster)
+        try:
+            df = pd.read_csv(filepath)
+        except Exception:
+            # Fallback to python engine for tab-separated or other formats
+            df = pd.read_csv(filepath, sep=None, engine='python', on_bad_lines='warn')
+
+        original_count = len(df)
+        if len(df) > MAX_ROWS:
+            df = df.head(MAX_ROWS)
 
         text_col = _find_column(df.columns, REVIEW_COL_CANDIDATES)
         if text_col is None:
@@ -101,12 +122,17 @@ def upload():
         faiss_index = _build_index(review_texts)
         print("[OK] FAISS index ready!")
 
+        message = f'Indexed {len(review_texts)} reviews successfully'
+        if original_count > MAX_ROWS:
+            message += f' (first {MAX_ROWS} of {original_count} total)'
+
         return jsonify({
-            'message': f'File uploaded & indexed successfully',
+            'message': message,
             'total_reviews': len(review_texts),
             'text_column': text_col
         })
     except Exception as e:
+        review_texts, product_names, faiss_index = [], [], None
         return jsonify({'error': str(e)}), 500
 
 @app.route('/search', methods=['POST'])
