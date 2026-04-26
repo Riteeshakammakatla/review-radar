@@ -29,8 +29,8 @@ def get_model():
     if _model is None:
         logger.info("Loading fastembed model (BAAI/bge-small-en-v1.5)...")
         from fastembed import TextEmbedding
-        # Limit threads to 1 or 2 to drastically reduce memory usage during embedding
-        _model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5", threads=1)
+        # Switch to an ultra-lightweight model to prevent OOM on Railway (512MB limit)
+        _model = TextEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2", threads=1)
         logger.info("Model loaded successfully!")
     return _model
 
@@ -185,12 +185,13 @@ def upload():
 
         logger.info(f"After filtering: {len(review_texts)} valid reviews")
 
-        # Build FAISS index
-        faiss_index = _build_index(review_texts)
-
-        # Clean up to free memory
+        # CRITICAL MEMORY FIX: Delete the Pandas DataFrame BEFORE building the index.
+        # This frees up ~50-100MB of RAM, preventing the OOM killer during embeddings.
         del df
         gc.collect()
+
+        # Build FAISS index
+        faiss_index = _build_index(review_texts)
 
         elapsed = round(time.time() - start_time, 1)
         logger.info(f"Upload complete in {elapsed}s")
