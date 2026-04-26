@@ -88,6 +88,12 @@ def upload():
     try:
         df = pd.read_csv(filepath, sep=None, engine='python', on_bad_lines='warn')
         
+        # Cap at 1500 rows as requested
+        MAX_ROWS = 1500
+        original_count = len(df)
+        if len(df) > MAX_ROWS:
+            df = df.head(MAX_ROWS)
+            
         text_col = _find_column(df.columns, REVIEW_COL_CANDIDATES)
         if text_col is None: text_col = _auto_detect_text_column(df)
         if text_col is None: return jsonify({'error': 'Could not detect text column'}), 400
@@ -100,8 +106,12 @@ def upload():
         faiss_index = _build_index(review_texts)
         print("[OK] FAISS index ready!")
 
+        message = 'File uploaded & indexed successfully'
+        if original_count > MAX_ROWS:
+            message += f' (capped at first {MAX_ROWS} reviews)'
+
         return jsonify({
-            'message': 'File uploaded & indexed successfully',
+            'message': message,
             'total_reviews': len(review_texts),
             'text_column': text_col
         })
