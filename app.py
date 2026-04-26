@@ -1,5 +1,4 @@
 from flask import Flask, render_template, request, jsonify
-from fastembed import TextEmbedding
 import pandas as pd
 import numpy as np
 import faiss
@@ -10,16 +9,23 @@ app.config['UPLOAD_FOLDER'] = 'uploads'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# Load the model at startup (Railway can handle this)
+# Lazy Loading: We only load the model when someone actually uploads a file.
+# This keeps the server's memory usage low at startup so Render doesn't kill it.
 # ---------------------------------------------------------------------------
-print("[INFO] Loading embedding model...")
-model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-print("[OK] Model loaded!")
+_model = None
+
+def get_model():
+    global _model
+    if _model is None:
+        print("[INFO] Loading embedding model for the first time...")
+        from fastembed import TextEmbedding
+        _model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        print("[OK] Model ready!")
+    return _model
 
 # ---------------------------------------------------------------------------
 # In-memory stores
 # ---------------------------------------------------------------------------
-reviews_data = []
 review_texts = []
 product_names = []
 faiss_index = None
@@ -56,7 +62,7 @@ def _auto_detect_text_column(df):
     return best_col
 
 def _build_index(texts):
-    # Process all texts (no caps)
+    model = get_model()
     embeddings_generator = model.embed(texts)
     embeddings = np.array(list(embeddings_generator)).astype('float32')
     
@@ -75,7 +81,7 @@ def home():
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    global reviews_data, review_texts, product_names, faiss_index
+    global review_texts, product_names, faiss_index
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
     file = request.files['file']
@@ -88,7 +94,7 @@ def upload():
     try:
         df = pd.read_csv(filepath, sep=None, engine='python', on_bad_lines='warn')
         
-        # Cap at 1500 rows as requested
+        # Limit for stability on Free Tiers
         MAX_ROWS = 1500
         original_count = len(df)
         if len(df) > MAX_ROWS:
@@ -106,9 +112,9 @@ def upload():
         faiss_index = _build_index(review_texts)
         print("[OK] FAISS index ready!")
 
-        message = 'File uploaded & indexed successfully'
+        message = 'File uploaded successfully'
         if original_count > MAX_ROWS:
-            message += f' (capped at first {MAX_ROWS} reviews)'
+            message += f" (Note: Processed first {MAX_ROWS} reviews)"
 
         return jsonify({
             'message': message,
@@ -123,12 +129,12 @@ def search():
     data = request.get_json()
     query = data.get('query', '').strip()
     if not query or faiss_index is None:
-        return jsonify({'error': 'Invalid request'}), 400
+        return jsonify({'error': 'Please upload a file first'}), 400
 
+    model = get_model()
     query_embedding = np.array(list(model.embed([query]))).astype('float32')
     faiss.normalize_L2(query_embedding)
 
-    # Search for top 10 results
     scores, indices = faiss_index.search(query_embedding, 10)
 
     results = []
