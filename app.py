@@ -92,6 +92,14 @@ def upload():
     try:
         df = pd.read_csv(filepath, sep=None, engine='python', on_bad_lines='warn')
         
+        # Render Free Tier constraint: Processing 21,000+ embeddings takes longer than 
+        # Render's 30-100 second timeout limit, resulting in a 502 Bad Gateway.
+        # We cap it at 2000 rows to ensure stability.
+        MAX_ROWS = 2000
+        original_count = len(df)
+        if len(df) > MAX_ROWS:
+            df = df.head(MAX_ROWS)
+        
         text_col = _find_column(df.columns, REVIEW_COL_CANDIDATES)
         if text_col is None: text_col = _auto_detect_text_column(df)
         if text_col is None: return jsonify({'error': 'Could not detect text column'}), 400
@@ -104,8 +112,12 @@ def upload():
         faiss_index = _build_index(review_texts)
         print("[OK] FAISS index ready!")
 
+        message = 'File uploaded & indexed'
+        if original_count > MAX_ROWS:
+            message += f" (Capped at {MAX_ROWS} out of {original_count} to prevent timeouts)"
+
         return jsonify({
-            'message': 'File uploaded & indexed',
+            'message': message,
             'total_reviews': len(review_texts),
             'text_column': text_col
         })
