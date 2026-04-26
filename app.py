@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify
+from fastembed import TextEmbedding
 import pandas as pd
 import numpy as np
 import faiss
@@ -9,19 +10,11 @@ app.config['UPLOAD_FOLDER'] = 'uploads'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# Lazy Loading: We only load the model when someone actually uploads a file.
-# This keeps the server's memory usage low at startup so Render doesn't kill it.
+# Load model at startup — Railway has enough RAM for this
 # ---------------------------------------------------------------------------
-_model = None
-
-def get_model():
-    global _model
-    if _model is None:
-        print("[INFO] Loading embedding model for the first time...")
-        from fastembed import TextEmbedding
-        _model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-        print("[OK] Model ready!")
-    return _model
+print("[INFO] Loading embedding model...")
+model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+print("[OK] Model loaded!")
 
 # ---------------------------------------------------------------------------
 # In-memory stores
@@ -32,7 +25,7 @@ faiss_index = None
 
 REVIEW_COL_CANDIDATES = [
     'review', 'text', 'review text', 'review_text', 'comment', 'body',
-    'content', 'reviews text', 'reviews_text', 'review body', 'review_body', 
+    'content', 'reviews text', 'reviews_text', 'review body', 'review_body',
     'feedback', 'description', 'summary', 'review content'
 ]
 PRODUCT_COL_CANDIDATES = [
@@ -62,10 +55,7 @@ def _auto_detect_text_column(df):
     return best_col
 
 def _build_index(texts):
-    model = get_model()
-    embeddings_generator = model.embed(texts)
-    embeddings = np.array(list(embeddings_generator)).astype('float32')
-    
+    embeddings = np.array(list(model.embed(texts))).astype('float32')
     faiss.normalize_L2(embeddings)
     dim = embeddings.shape[1]
     index = faiss.IndexFlatIP(dim)
@@ -87,37 +77,32 @@ def upload():
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
-    
+
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
     file.save(filepath)
 
     try:
         df = pd.read_csv(filepath, sep=None, engine='python', on_bad_lines='warn')
-        
-        # Limit for stability on Free Tiers
-        MAX_ROWS = 1500
-        original_count = len(df)
-        if len(df) > MAX_ROWS:
-            df = df.head(MAX_ROWS)
-            
+
         text_col = _find_column(df.columns, REVIEW_COL_CANDIDATES)
-        if text_col is None: text_col = _auto_detect_text_column(df)
-        if text_col is None: return jsonify({'error': 'Could not detect text column'}), 400
+        if text_col is None:
+            text_col = _auto_detect_text_column(df)
+        if text_col is None:
+            return jsonify({'error': 'Could not detect text column'}), 400
 
         prod_col = _find_column(df.columns, PRODUCT_COL_CANDIDATES)
         review_texts = df[text_col].fillna('').astype(str).tolist()
-        product_names = df[prod_col].fillna('').astype(str).tolist() if prod_col else [None]*len(review_texts)
+        product_names = (
+            df[prod_col].fillna('').astype(str).tolist()
+            if prod_col else [None] * len(review_texts)
+        )
 
         print(f"[INFO] Indexing {len(review_texts)} reviews...")
         faiss_index = _build_index(review_texts)
         print("[OK] FAISS index ready!")
 
-        message = 'File uploaded successfully'
-        if original_count > MAX_ROWS:
-            message += f" (Note: Processed first {MAX_ROWS} reviews)"
-
         return jsonify({
-            'message': message,
+            'message': f'File uploaded & indexed successfully',
             'total_reviews': len(review_texts),
             'text_column': text_col
         })
@@ -131,7 +116,6 @@ def search():
     if not query or faiss_index is None:
         return jsonify({'error': 'Please upload a file first'}), 400
 
-    model = get_model()
     query_embedding = np.array(list(model.embed([query]))).astype('float32')
     faiss.normalize_L2(query_embedding)
 
@@ -139,7 +123,8 @@ def search():
 
     results = []
     for score, idx in zip(scores[0], indices[0]):
-        if idx == -1: continue
+        if idx == -1:
+            continue
         results.append({
             'review_text': review_texts[idx],
             'product_name': product_names[idx],
